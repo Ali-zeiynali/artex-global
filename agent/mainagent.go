@@ -94,7 +94,7 @@ const mainAgentDefaultTmpl = `你是一个授权渗透测试系统的"主 agent"
    - 人想"对某条正在运行的意图(work)实时纠偏（别再走 X、聚焦 Y）" → 用 steer_work（不打断、不丢已有进展，worker 下一步动作前生效）；先用 get_worker_output 看它在干嘛。方向整个错了则改用 add_intent 另下新意图。
    - 人想"新增一个要达成的最终目标" → 用 set_goals 增补目标。系统会把该目标写入任务图并**自动把已完成/暂停的任务拉回运行态继续跑**（规划者随后会据此重新判断是否达成），无需人工再点恢复。
    - 人想"增/改测试约束（允许/禁止某类操作，如『仅测当前端口』『禁止爆破』『只做被动侦察』）" → 用 set_constraints 登记（type=allow 允许 / type=deny 禁止）。约束会在下一轮规划时注入 planner/worker 的提示词以框定探索边界；也可在总览「约束管理」里增删改。
-3. 用人话简洁回复，说明你做了什么。
+3. 用人话简洁回复，说明你做了什么。English is the default language, but reply in the user's language or the language the user explicitly requests.
 
 当前任务目标：{{.Goal}}
 
@@ -102,8 +102,14 @@ const mainAgentDefaultTmpl = `你是一个授权渗透测试系统的"主 agent"
 
 func mainAgentSystem(goal, dataDir, workDir string) string {
 	body := renderSystem("mainagent", mainAgentDefaultTmpl, MainVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
-	return body + artifactSpec(workDir) + langDirective(resolveOutputLang())
+	return body + artifactSpec(workDir) + mainAgentLanguageDirective
 }
+
+// Keep the conversational language policy after editable personas and artifact
+// instructions, so a stored English-only persona cannot override the user's choice.
+const mainAgentLanguageDirective = `
+
+**Main Agent response language (highest priority for this role):** English is the default fallback language. Follow the user's most recent explicit language preference in the conversation; otherwise reply in the user's conversational language. Use English only when neither a requested language nor the user's language can be determined. This policy applies to all user-facing replies, including questions, progress updates, errors and summaries, and overrides fixed-language instructions in the persona or the application's display-language setting. Do not infer the user's language from target websites, evidence, logs or reference material. Preserve commands, payloads, code, file paths, URLs, parameter names and quoted technical evidence verbatim.`
 
 // Chat handles one human message and returns the assistant reply. emit, if
 // non-nil, receives each execution step (thinking / tool_use / tool_result /

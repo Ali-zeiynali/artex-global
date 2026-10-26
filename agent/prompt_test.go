@@ -127,10 +127,11 @@ func TestLangDirectiveLocalized(t *testing.T) {
 }
 
 // TestLangDirectiveAppendedToUserFacingRoles pins the localization tail wiring:
-// every user-facing role's system prompt must end with the code-owned
+// roles using the configured display language must end with the code-owned
 // output-language directive in the configured language, and a DB-edited body must
 // NOT be able to drop it. Exercised for each supported display language by driving
-// the OutputLanguage hook the roles resolve through.
+// the OutputLanguage hook the roles resolve through. Main Agent's conversational
+// language policy is covered separately in mainagent_language_test.go.
 func TestLangDirectiveAppendedToUserFacingRoles(t *testing.T) {
 	t.Cleanup(func() { PromptOverride = nil; OutputLanguage = nil })
 
@@ -143,10 +144,9 @@ func TestLangDirectiveAppendedToUserFacingRoles(t *testing.T) {
 		OutputLanguage = func() string { return code }
 		marker := langMarker[code]
 		cases := map[string]string{
-			"worker":    workerSystem("", "", "/data", "/data"),
-			"planner":   plannerSystem("g", "/data", "/data"),
-			"mainagent": mainAgentSystem("g", "/data", "/data"),
-			"chat":      chatSystem("chat", "/data", "/data"),
+			"worker":  workerSystem("", "", "/data", "/data"),
+			"planner": plannerSystem("g", "/data", "/data"),
+			"chat":    chatSystem("chat", "/data", "/data"),
 			// goals is user-facing too: set_goals/set_constraints persist goal and
 			// constraint nodes shown in the UI graph/plan tab. withScope=true exercises
 			// the longer assembly (body + scope tail), so the language tail must still
