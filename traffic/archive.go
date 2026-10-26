@@ -17,9 +17,10 @@ import (
 // Large content-addressed bodies are copied alongside this manifest rather than
 // base64-encoded, preserving deduplication and allowing the tar writer to stream.
 type ArchiveSnapshot struct {
-	Version   int               `json:"version"`
-	Exchanges []ArchiveExchange `json:"exchanges"`
-	Blobs     []string          `json:"blobs"`
+	Version      int               `json:"version"`
+	Exchanges    []ArchiveExchange `json:"exchanges"`
+	Blobs        []string          `json:"blobs"`
+	MissingBlobs []string          `json:"missing_blobs,omitempty"`
 }
 
 type ArchiveExchange struct {
@@ -45,6 +46,19 @@ type ArchiveExchange struct {
 // lock while reading SQLite and blobs, so each body and its index row come from
 // one consistent point in time.
 func (t *Traffic) ExportHosts(hosts []string, dir string) (int64, error) {
+	return t.exportHosts(hosts, dir, nil)
+}
+
+// ExportHostsWithMissing preserves references and inline previews for bodies
+// deleted before archiving, reporting them instead of fabricating their bytes.
+func (t *Traffic) ExportHostsWithMissing(hosts []string, dir string) (int64, []string, error) {
+	var missing []string
+	count, err := t.exportHosts(hosts, dir, func(hash string) { missing = append(missing, hash) })
+	sort.Strings(missing)
+	return count, missing, err
+}
+
+func (t *Traffic) exportHosts(hosts []string, dir string, onMissing func(string)) (int64, error) {
 	if t == nil || len(hosts) == 0 {
 		return 0, nil
 	}
@@ -104,10 +118,24 @@ FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &r
 	}
 	for hash := range blobs {
 		source, err := t.blobPath(hash)
+		if errors.Is(err, os.ErrNotExist) {
+			snapshot.MissingBlobs = append(snapshot.MissingBlobs, hash)
+			if onMissing != nil {
+				onMissing(hash)
+			}
+			continue
+		}
 		if err != nil {
 			return 0, err
 		}
 		data, err := os.ReadFile(source)
+		if errors.Is(err, os.ErrNotExist) {
+			snapshot.MissingBlobs = append(snapshot.MissingBlobs, hash)
+			if onMissing != nil {
+				onMissing(hash)
+			}
+			continue
+		}
 		if err != nil {
 			return 0, err
 		}
@@ -117,6 +145,7 @@ FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &r
 		snapshot.Blobs = append(snapshot.Blobs, hash)
 	}
 	sort.Strings(snapshot.Blobs)
+	sort.Strings(snapshot.MissingBlobs)
 	raw, err := json.Marshal(snapshot)
 	if err != nil {
 		return 0, err

@@ -697,9 +697,11 @@ func (t *Traffic) blobPath(hash string) (string, error) {
 	} {
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {
 			return p, nil
+		} else if err != nil && !os.IsNotExist(err) {
+			return "", err
 		}
 	}
-	return "", fmt.Errorf("blob %s 不存在", hash)
+	return "", fmt.Errorf("blob %s 不存在: %w", hash, os.ErrNotExist)
 }
 
 // Blob opens a spilled body for streaming; the caller must close the file.

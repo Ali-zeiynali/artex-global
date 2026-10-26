@@ -174,11 +174,18 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	}
 	if s.m.traffic != nil && len(snapshot.Hosts) > 0 {
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "snapshot_traffic", 38)
-		trafficCount, err := s.m.traffic.ExportHosts(snapshot.Hosts, filepath.Join(fileStage.payload, "traffic"))
+		trafficCount, missing, err := s.m.traffic.ExportHostsWithMissing(snapshot.Hosts, filepath.Join(fileStage.payload, "traffic"))
 		if err != nil {
 			return err
 		}
 		snapshot.DataCounts["traffic"] = trafficCount
+		if len(missing) > 0 {
+			snapshot.DataCounts["traffic_missing_blobs"] = int64(len(missing))
+			warning := fmt.Sprintf("%d traffic body files were already missing before archival. Existing previews and original hashes are preserved; these deleted full bodies cannot be restored.", len(missing))
+			if err := s.m.pg.AppendTaskArchiveWarning(job.ID, warning); err != nil {
+				return err
+			}
+		}
 	}
 	archivePath := taskArchivePath(s.m.dir, job.ID, taskID)
 	evidenceSnapshots, err := pgdb.ArchiveEvidenceSnapshots(snapshot)
