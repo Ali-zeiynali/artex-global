@@ -172,6 +172,7 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	if snapshot.ExplorationID != task.ExplorationID {
 		return errors.New("보관 스냅샷을 만드는 동안 작업 탐색 기록이 변경되었습니다")
 	}
+	missingTrafficBlobs := 0
 	if s.m.traffic != nil && len(snapshot.Hosts) > 0 {
 		_ = s.m.pg.UpdateTaskArchiveProgress(job.ID, "snapshot_traffic", 38)
 		trafficCount, missing, err := s.m.traffic.ExportHostsWithMissing(snapshot.Hosts, filepath.Join(fileStage.payload, "traffic"))
@@ -180,11 +181,8 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 		}
 		snapshot.DataCounts["traffic"] = trafficCount
 		if len(missing) > 0 {
+			missingTrafficBlobs = len(missing)
 			snapshot.DataCounts["traffic_missing_blobs"] = int64(len(missing))
-			warning := fmt.Sprintf("%d traffic body files were already missing before archival. Existing previews and original hashes are preserved; these deleted full bodies cannot be restored.", len(missing))
-			if err := s.m.pg.AppendTaskArchiveWarning(job.ID, warning); err != nil {
-				return err
-			}
 		}
 	}
 	archivePath := taskArchivePath(s.m.dir, job.ID, taskID)
@@ -225,6 +223,14 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 	}
 	committed = true
 	removePackage = false
+	if missingTrafficBlobs > 0 {
+		// CompleteTaskArchive clears prior-attempt warnings. Publish this attempt's
+		// missing-body notice after commit, just like the cleanup warnings below.
+		warning := fmt.Sprintf("%d traffic body files were already missing before archival. Existing previews and original hashes are preserved; these deleted full bodies cannot be restored.", missingTrafficBlobs)
+		if err := s.m.pg.AppendTaskArchiveWarning(job.ID, warning); err != nil {
+			log.Printf("[task-archive] task %s: could not persist missing-body warning: %v", taskID, err)
+		}
+	}
 	if trafficStage != nil {
 		if err := trafficStage.Commit(); err != nil {
 			warning := "보관을 완료했지만 전용 트래픽 핫 스토리지 정리에 실패했습니다(보관 패키지는 복원할 수 있습니다): " + err.Error()
