@@ -251,11 +251,13 @@ function ProfileSheet({
   open,
   onOpenChange,
   onSaved,
+  onTested,
 }: {
   profile: LLMProfile | null; // null = 新建
   open: boolean;
   onOpenChange: (o: boolean) => void;
   onSaved: (id: string) => void;
+  onTested: () => void;
 }) {
   const t = useTranslations("llmPage");
   const isNew = !profile;
@@ -371,11 +373,12 @@ function ProfileSheet({
         sessionHeaderKey.trim(),
       );
       // 回复内容一并展示：看得见模型确实说了话，才算和会话里跑通是一回事。
-      if (r.ok)
+      if (r.ok) {
         toast.success(t("profile.toast.testOk", { latency: r.latency_ms ?? "?", model: r.model ?? model }), {
           description: r.reply ? t("profile.toast.testReply", { reply: r.reply }) : undefined,
         });
-      else toast.error(t("profile.toast.testFailed", { error: r.error ?? t("profile.toast.unknown") }));
+        onTested();
+      } else toast.error(t("profile.toast.testFailed", { error: r.error ?? t("profile.toast.unknown") }));
     } catch (e) {
       toast.error(t("profile.toast.testError", { msg: (e as Error).message }));
     } finally {
@@ -789,6 +792,16 @@ export default function LLMPage() {
     void load();
   }, [load]);
 
+  React.useEffect(() => {
+    const refresh = () => void loadPool();
+    const timer = window.setInterval(refresh, 10_000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [loadPool]);
+
   // 卡片上的健康徽章按 profile id 取轮询状态。
   const health = React.useMemo(() => {
     const m = new Map<string, LLMPoolMember>();
@@ -959,7 +972,13 @@ export default function LLMPage() {
         </TabsContent>
       </Tabs>
 
-      <ProfileSheet profile={editing} open={editOpen} onOpenChange={setEditOpen} onSaved={() => void load()} />
+      <ProfileSheet
+        profile={editing}
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        onSaved={() => void load()}
+        onTested={() => void loadPool()}
+      />
       <PoolSheet open={poolOpen} onOpenChange={setPoolOpen} pool={pool} onReload={loadPool} />
     </div>
   );

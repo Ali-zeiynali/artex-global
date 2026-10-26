@@ -160,27 +160,29 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 	return llm.Message{}, "", llm.Usage{}, fmt.Errorf("%w: %v", ErrExhausted, lastErr)
 }
 
-// order picks the members to try, in order: skip those in a cooling-off window
-// and those whose context window can't hold this request, then rotate within each
-// equal-priority group so same-priority profiles share the load. Never returns an
-// empty slice — if everything is filtered out, the head of the chain is tried
-// anyway, since stalling the engine is worse than one more failed request.
+// order prefers members outside their cooling-off window, rotating equal ranks.
+// Cooling members remain last-resort candidates: a quota may have been reset
+// externally, and a stale breaker must not strand a recovered backup behind a
+// failing head. They are never called while a preferred member succeeds. Members
+// whose context window is too small remain excluded from both groups.
 func (p *Pool) order(req llm.CompletionRequest) []*Member {
 	est := estimateTokens(req)
-	var open []*Member
+	var open, cooling []*Member
 	for _, m := range p.members {
-		if p.health.IsOpen(m.ID) {
-			continue
-		}
 		if m.WindowTokens > 0 && est > m.WindowTokens {
 			continue // would 400 on length — not a useful failover target
 		}
+		if p.health.IsOpen(m.ID) {
+			cooling = append(cooling, m)
+			continue
+		}
 		open = append(open, m)
 	}
-	if len(open) == 0 {
-		return p.members[:1] // last resort: probe the head rather than stall
+	if len(open)+len(cooling) == 0 {
+		return p.members[:1] // obtain the real error if no context window can fit
 	}
-	return rotateGroups(open, p.rr.Add(1)-1)
+	n := p.rr.Add(1) - 1
+	return append(rotateGroups(open, n), rotateGroups(cooling, n)...)
 }
 
 // rotateGroups rotates each run of equal-ranked members by n, so profiles sharing
