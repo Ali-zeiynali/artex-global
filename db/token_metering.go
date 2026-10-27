@@ -5,10 +5,10 @@ package db
 // the always-on call ledger. Old imported tasks may have results only.
 const explorationTokenRows = `
 SELECT exploration_id,input_tokens,output_tokens,
-       cache_read AS cache_read_tokens,cache_write AS cache_write_tokens
+       cache_read AS cache_read_tokens,cache_write AS cache_write_tokens,ts AS created_at
 FROM llm_usage WHERE exploration_id IS NOT NULL
 UNION ALL
-SELECT a.exploration_id,a.input_tokens,a.output_tokens,a.cache_read_tokens,a.cache_write_tokens
+SELECT a.exploration_id,a.input_tokens,a.output_tokens,a.cache_read_tokens,a.cache_write_tokens,a.created_at
 FROM activity a
 WHERE a.kind='result' AND NOT EXISTS (
     SELECT 1 FROM llm_usage u WHERE u.exploration_id=a.exploration_id

@@ -137,8 +137,8 @@ type DailyTokenBucket struct {
 }
 
 // TokenDailyAll aggregates token consumption by calendar day (UTC) for the
-// past `days` days across all explorations. Only kind='result' rows carry token
-// counts (the terminal per-run summary), so there is no double-counting.
+// past `days` days across all explorations, using the call ledger and falling
+// back to legacy result rows without double-counting either source.
 func (d *DB) TokenDailyAll(days int) ([]DailyTokenBucket, error) {
 	if days <= 0 {
 		days = 30
@@ -148,9 +148,8 @@ func (d *DB) TokenDailyAll(days int) ([]DailyTokenBucket, error) {
 		       COALESCE(SUM(input_tokens), 0),
 		       COALESCE(SUM(output_tokens), 0),
 		       COALESCE(SUM(cache_read_tokens), 0)
-		FROM activity
-		WHERE kind = 'result'
-		  AND created_at >= NOW() - ($1 * INTERVAL '1 day')
+		FROM (`+explorationTokenRows+`) metering
+		WHERE created_at >= NOW() - ($1 * INTERVAL '1 day')
 		GROUP BY day
 		ORDER BY day`, days)
 	if err != nil {

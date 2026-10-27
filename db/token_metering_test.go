@@ -24,6 +24,10 @@ func TestExplorationTotalsPreferCallLedgerWithoutDoubleCounting(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertTokenUsage(t, legacy, 10, 7, 3, 0)
+	beforeDaily, err := d.TokenDailyAll(30)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, status := range []string{"ok", "error"} {
 		if err := d.InsertLLMUsage(&LLMUsage{ExplorationID: exp, InputTokens: 100, OutputTokens: 5, CacheRead: 80, Status: status}); err != nil {
 			t.Fatal(err)
@@ -39,4 +43,20 @@ func TestExplorationTotalsPreferCallLedgerWithoutDoubleCounting(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertTokenUsage(t, all[exp], 200, 10, 160, 0)
+	afterDaily, err := d.TokenDailyAll(30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dailyDelta TokenUsage
+	for _, day := range beforeDaily {
+		dailyDelta.InputTokens -= day.InputTokens
+		dailyDelta.OutputTokens -= day.OutputTokens
+		dailyDelta.CacheReadTokens -= day.CacheReadTokens
+	}
+	for _, day := range afterDaily {
+		dailyDelta.InputTokens += day.InputTokens
+		dailyDelta.OutputTokens += day.OutputTokens
+		dailyDelta.CacheReadTokens += day.CacheReadTokens
+	}
+	assertTokenUsage(t, dailyDelta, 190, 3, 157, 0)
 }
