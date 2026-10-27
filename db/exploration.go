@@ -1233,14 +1233,14 @@ func (d *DB) ExplorationDiag(expID int64) (expExists bool, taskRefs int, maxExpI
 	return
 }
 
-// TokenTotal sums token usage across ALL workers for this exploration (whole-task
-// total). Same source as TokenStatsByWorker (kind='result' rows), just ungrouped.
+// TokenTotal uses the per-call ledger, including interrupted calls and corrected
+// historical usage. Legacy explorations without ledger rows fall back to results.
 func (s *ExplorationStore) TokenTotal() (TokenUsage, error) {
 	var u TokenUsage
 	err := s.db.QueryRow(`SELECT
 		COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
 		COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_write_tokens),0)
-	FROM activity WHERE exploration_id=$1 AND kind='result'`, s.expID).
+	FROM (`+explorationTokenRows+`) metering WHERE exploration_id=$1`, s.expID).
 		Scan(&u.InputTokens, &u.OutputTokens, &u.CacheReadTokens, &u.CacheWriteTokens)
 	return u, err
 }
@@ -1252,7 +1252,7 @@ func (d *DB) TokenTotalsAll() (map[int64]TokenUsage, error) {
 	rows, err := d.Query(`SELECT exploration_id,
 		COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
 		COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_write_tokens),0)
-	FROM activity WHERE kind='result' GROUP BY exploration_id`)
+	FROM (` + explorationTokenRows + `) metering GROUP BY exploration_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1330,8 +1330,8 @@ func (d *DB) TaskListMetricsAll() (map[int64]TaskListMetrics, error) {
 			       SUM(output_tokens) AS output_tokens,
 			       SUM(cache_read_tokens) AS cache_read_tokens,
 			       SUM(cache_write_tokens) AS cache_write_tokens
-			FROM activity
-			WHERE exploration_id=task.exploration_id AND kind='result'
+			FROM (` + explorationTokenRows + `) metering
+			WHERE exploration_id=task.exploration_id
 		) token_metrics ON true
 		LEFT JOIN LATERAL (
 			SELECT EXTRACT(EPOCH FROM created_at)::bigint AS created_at

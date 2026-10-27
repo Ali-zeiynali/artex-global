@@ -280,7 +280,11 @@ func (c Config) NewProvider() (llm.Provider, error) {
 	if c.RatePerSecond > 0 || c.RatePerMinute > 0 {
 		lc.RateLimit = &llm.RateLimit{PerSecond: c.RatePerSecond, PerMinute: c.RatePerMinute}
 	}
-	return llm.NewProvider(lc)
+	p, err := llm.NewProvider(lc)
+	if err == nil && c.Format == llm.FormatAnthropic {
+		p = &anthropicUsageProvider{inner: p}
+	}
+	return p, err
 }
 
 // IsQuotaExhaustedMessage deliberately recognizes only explicit balance,
@@ -360,6 +364,9 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 	// 429 branch below reads through this wrapper, so its body lands in the
 	// capture before being replaced.
 	resp.Body = capt.TeeResponse(resp.StatusCode, resp.Body)
+	if observer, ok := req.Context().Value(anthropicUsageKey{}).(*anthropicUsageObserver); ok && resp.StatusCode == http.StatusOK {
+		resp.Body = &anthropicUsageBody{ReadCloser: resp.Body, observer: observer}
+	}
 
 	if resp.StatusCode != http.StatusTooManyRequests {
 		return resp, nil

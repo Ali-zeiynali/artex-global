@@ -161,6 +161,10 @@ func Open(dsn string) (*DB, error) {
 		if err := applySchemaWithRetry(context.Background(), conn, time.Sleep); err != nil {
 			return fmt.Errorf("apply schema: %w", err)
 		}
+		// Token aggregates use the usage ledger even before a task manager starts.
+		if _, err := conn.ExecContext(context.Background(), llmUsageSchema); err != nil {
+			return fmt.Errorf("apply usage ledger schema: %w", err)
+		}
 		if err := d.seedBuiltins(); err != nil {
 			return fmt.Errorf("seed builtins: %w", err)
 		}
