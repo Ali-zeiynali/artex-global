@@ -19,6 +19,9 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 func TestIsQuotaExhaustedMessage(t *testing.T) {
 	t.Parallel()
 	positive := []string{
+		`{"error":{"type":"rate_limit_error","code":"1308","message":"Usage limit reached for 5 hour"}}`,
+		`{"error":{"type":"rate_limit_error","code":"1113","message":"Insufficient balance or no resource package"}}`,
+		`{"error":{"type":"rate_limit_error","code":"1310","message":"Usage limit reached for week"}}`,
 		`{"error":{"code":"insufficient_quota"}}`,
 		`RESOURCE_EXHAUSTED`,
 		`You exceeded your current quota, please check your plan and billing details.`,
@@ -33,6 +36,7 @@ func TestIsQuotaExhaustedMessage(t *testing.T) {
 	}
 
 	negative := []string{
+		`primary: status 429: {"code":"1302","message":"Rate limit reached for requests"}; backup: status 402: {"code":"1308","message":"Usage limit reached for 5 hour"}`,
 		`status 429: rate limit exceeded`,
 		`RESOURCE_EXHAUSTED: rate limit exceeded`,
 		`too many requests per minute`,
@@ -63,6 +67,8 @@ func TestQuotaAwareTransportOnlyNormalizesExplicitQuota429(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "quota", status: http.StatusTooManyRequests, body: `{"code":"insufficient_quota"}`, wantStatus: http.StatusPaymentRequired},
+		{name: "zai plan quota", status: http.StatusTooManyRequests, body: `{"error":{"type":"rate_limit_error","code":"1308","message":"Usage limit reached for 5 hour"}}`, wantStatus: http.StatusPaymentRequired},
+		{name: "zai burst limit", status: http.StatusTooManyRequests, body: `{"error":{"type":"rate_limit_error","code":"1302","message":"Rate limit reached for requests"}}`, wantStatus: http.StatusTooManyRequests},
 		{name: "ordinary rate limit", status: http.StatusTooManyRequests, body: `{"message":"rate limit exceeded"}`, wantStatus: http.StatusTooManyRequests},
 		{name: "server error", status: http.StatusInternalServerError, body: `insufficient_quota`, wantStatus: http.StatusInternalServerError},
 	}

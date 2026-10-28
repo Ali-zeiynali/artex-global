@@ -291,6 +291,8 @@ func (c Config) NewProvider() (llm.Provider, error) {
 // billing, credit, or quota-exhaustion signals. Generic 429/rate-limit text,
 // authentication failures, network errors, and server failures are excluded.
 var nonFailoverHTTPStatus = regexp.MustCompile(`(?:status(?:\s+code)?|http(?:\s+status)?)\s*[=:]?\s*(?:401|403|5\d\d)\b`)
+var zaiQuotaCode = regexp.MustCompile(`"code"\s*:\s*"?(?:1113|1308|1310)"?[,}]`)
+var zaiTransientCode = regexp.MustCompile(`"code"\s*:\s*"?1302"?[,}]`)
 var transientQuotaLimit = regexp.MustCompile(`(?i)(?:\b(?:rpm|tpm|rpd|qps)\b|quota[_\s-]*metric|rate[_\s-]*limit|too many requests|(?:requests?|tokens?)\s+(?:per|/)\s*(?:second|minute)|(?:per|/)\s*(?:second|minute)\s+(?:requests?|tokens?)|generate[_\s-]*requests[_\s-]*per[_\s-]*(?:minute|second)|tokens?[_\s-]*per[_\s-]*(?:minute|second))`)
 
 func IsQuotaExhaustedMessage(message string) bool {
@@ -299,6 +301,14 @@ func IsQuotaExhaustedMessage(message string) bool {
 	// even when a gateway happens to echo a quota-looking phrase in the body.
 	if nonFailoverHTTPStatus.MatchString(message) {
 		return false
+	}
+	// Z.ai encodes exhausted plan/balance as HTTP 429 + rate_limit_error too.
+	// Match the business code before the generic rate-limit marker below.
+	if zaiTransientCode.MatchString(message) {
+		return false
+	}
+	if zaiQuotaCode.MatchString(message) && (strings.Contains(message, "usage limit reached") || strings.Contains(message, "insufficient balance") || strings.Contains(message, "no resource package")) {
+		return true
 	}
 	// Provider APIs frequently describe an ordinary rate limit as "quota
 	// exceeded", especially Google-style responses containing a quota metric.

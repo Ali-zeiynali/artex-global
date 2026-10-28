@@ -3,7 +3,6 @@ package llmpool
 import (
 	"context"
 	"errors"
-	"fmt"
 	"iter"
 	"log"
 	"regexp"
@@ -83,7 +82,10 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 	order := p.order(req)
 	return func(yield func(llm.StreamEvent, error) bool) {
 		var lastErr error
-		for i, m := range order {
+		failures := map[int64]error{}
+		recoveryRounds := 0
+		for i := 0; i < len(order); i++ {
+			m := order[i]
 			emitted := false
 			var failed error
 			for ev, err := range m.Prov.Stream(ctx, req) {
@@ -104,6 +106,7 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 				return
 			}
 			lastErr = failed
+			failures[m.ID] = failed
 			hard := isHardFailure(failed)
 			if p.health.Trip(m.ID, trimErr(failed), hard) {
 				log.Printf("[llmpool] 配置 %q(%s) 已熔断：%s", m.Name, m.Model, trimErr(failed))
@@ -113,12 +116,23 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 				log.Printf("[llmpool] LLM 故障转移：%q(%s) → %q(%s)，原因：%s",
 					m.Name, m.Model, n.Name, n.Model, trimErr(failed))
 			}
+			if i+1 == len(order) && recoveryRounds < 2 {
+				retry := burstRecoveryMembers(order, failures)
+				if len(retry) > 0 {
+					if err := waitBurstRecovery(ctx, recoveryRounds); err != nil {
+						yield(llm.StreamEvent{}, err)
+						return
+					}
+					recoveryRounds++
+					order = append(order, retry...)
+				}
+			}
 		}
 		if lastErr == nil {
 			lastErr = ErrExhausted
 		}
 		log.Printf("[llmpool] 轮询链已耗尽(%d 个配置全部失败)，最后错误：%s", len(order), trimErr(lastErr))
-		yield(llm.StreamEvent{}, fmt.Errorf("%w: %v", ErrExhausted, lastErr))
+		yield(llm.StreamEvent{}, exhaustedError(order, failures, lastErr))
 	}
 }
 
@@ -130,7 +144,10 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	order := p.order(req)
 	var lastErr error
-	for i, m := range order {
+	failures := map[int64]error{}
+	recoveryRounds := 0
+	for i := 0; i < len(order); i++ {
+		m := order[i]
 		msg, sr, usage, err := m.Prov.Complete(ctx, req)
 		if err == nil {
 			p.health.Pass(m.ID)
@@ -143,6 +160,7 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 			return llm.Message{}, "", llm.Usage{}, err
 		}
 		lastErr = err
+		failures[m.ID] = err
 		hard := isHardFailure(err)
 		if p.health.Trip(m.ID, trimErr(err), hard) {
 			log.Printf("[llmpool] 配置 %q(%s) 已熔断：%s", m.Name, m.Model, trimErr(err))
@@ -152,12 +170,22 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 			log.Printf("[llmpool] LLM 故障转移：%q(%s) → %q(%s)，原因：%s",
 				m.Name, m.Model, n.Name, n.Model, trimErr(err))
 		}
+		if i+1 == len(order) && recoveryRounds < 2 {
+			retry := burstRecoveryMembers(order, failures)
+			if len(retry) > 0 {
+				if err := waitBurstRecovery(ctx, recoveryRounds); err != nil {
+					return llm.Message{}, "", llm.Usage{}, err
+				}
+				recoveryRounds++
+				order = append(order, retry...)
+			}
+		}
 	}
 	if lastErr == nil {
 		lastErr = ErrExhausted
 	}
 	log.Printf("[llmpool] 轮询链已耗尽(%d 个配置全部失败)，最后错误：%s", len(order), trimErr(lastErr))
-	return llm.Message{}, "", llm.Usage{}, fmt.Errorf("%w: %v", ErrExhausted, lastErr)
+	return llm.Message{}, "", llm.Usage{}, exhaustedError(order, failures, lastErr)
 }
 
 // order prefers members outside their cooling-off window, rotating equal ranks.
