@@ -23,6 +23,7 @@ def broker(tmp_path, monkeypatch):
     async def provision(aid):
         module.update(aid, status="connected", tool_count=100)
         return module.public(module.account(aid))
+    module._real_provision = module.provision
     monkeypatch.setattr(module, "restore", restore)
     monkeypatch.setattr(module, "provision", provision)
     with TestClient(module.app, headers={"Authorization": "Bearer test-bridge-token"}) as client:
@@ -104,10 +105,10 @@ def test_telegram_without_two_step_finishes_after_code(broker, monkeypatch):
 def test_atomic_multi_account_auth_and_secret_redaction(broker, monkeypatch):
     module, client = broker
     calls = []
-    async def discover(port=None, api_key=None):
+    async def discover(port=None, api_key=None, expected_identity=None):
         calls.append(api_key)
         if api_key == "invalid-inbox-key":
-            raise ValueError("provider rejected secret")
+            raise module.HTTPException(400, "Provider rejected the inbox key")
         return [{"name": "help", "inputSchema": {"type": "object"}}]
     monkeypatch.setattr(module, "discover", discover)
     assert client.post("/v1/accounts/atomicmail", json={"email": "bad", "api_key": "short"}).status_code == 400
@@ -143,3 +144,79 @@ def test_telegram_avatar_is_private_and_missing_photo_falls_back(broker):
     asyncio.run(module.cache_avatar(NoPhotoClient(), aid))
     assert client.get(path).status_code == 404
     assert client.get("/v1/accounts").json()["accounts"][0]["avatar_version"] is None
+
+
+def test_atomic_requires_real_inbox_auth_and_matching_address(broker, monkeypatch):
+    import httpx
+    module, client = broker
+    calls = []
+    def handler(request):
+        rpc = json.loads(request.content)
+        calls.append(rpc["method"])
+        method = rpc["method"]
+        if method == "notifications/initialized": return httpx.Response(202)
+        if method == "initialize": result = {"protocolVersion": "2025-06-18", "capabilities": {}, "serverInfo": {"name": "test", "version": "1"}}
+        elif method == "tools/list": result = {"tools": [{"name": "list_agents", "inputSchema": {"type": "object"}}]}
+        elif method == "tools/call":
+            # Simulate a vendor which lists tools for a bad key but denies the
+            # actual authenticated operation, even with HTTP 200.
+            if request.headers["authorization"] != "Bearer valid-test-inbox-key":
+                result = {"isError": True, "content": [{"type": "text", "text": "authorization failed"}]}
+            else:
+                result = {"content": [{"type": "text", "text": json.dumps({"agents": [{"accountId": "inbox-one", "email": "real@atomicmail.ai"}]})}]}
+        else: return httpx.Response(204)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": rpc.get("id"), "result": result})
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(module, "HTTP", upstream)
+    for key, email in [("invalid-test-inbox-key", "real@atomicmail.ai"), ("valid-test-inbox-key", "wrong@atomicmail.ai")]:
+        response = client.post("/v1/accounts/atomicmail", json={"email": email, "api_key": key})
+        assert response.status_code == 400
+        assert key not in response.text
+        assert not client.get("/v1/accounts").json()["accounts"]
+    response = client.post("/v1/accounts/atomicmail", json={"email": "real@atomicmail.ai", "api_key": "valid-test-inbox-key"})
+    assert response.status_code == 200
+    assert calls.count("tools/call") == 3
+
+
+def test_atomic_proxy_decodes_gzip_and_preserves_private_auth(broker, monkeypatch):
+    import gzip
+    import httpx
+    module, client = broker
+    aid = module.create("atomicmail", "Compressed upstream", "test@atomicmail.ai", {"api_key": "private-vendor-inbox-key"})
+    mcp_token = module.credentials(module.account(aid))["mcp_token"]
+    result = {"jsonrpc": "2.0", "id": 1, "result": {"tools": [{"name": "help"}]}}
+    compressed = gzip.compress(json.dumps(result).encode())
+    class WireStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield compressed[:12]
+            yield compressed[12:]
+    def handler(request):
+        assert request.headers["authorization"] == "Bearer private-vendor-inbox-key"
+        assert "cookie" not in request.headers
+        return httpx.Response(200, headers={"Content-Encoding": "gzip", "Content-Type": "application/json", "Mcp-Session-Id": "test-session"}, stream=WireStream())
+    monkeypatch.setattr(module, "HTTP", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    response = client.post(f"/mcp/{aid}", headers={"Authorization": "Bearer " + mcp_token, "Cookie": "browser=private"}, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    assert response.status_code == 200 and response.json() == result
+    assert "content-encoding" not in response.headers
+    assert response.headers["mcp-session-id"] == "test-session"
+    assert "private-vendor-inbox-key" not in response.text
+
+
+def test_account_not_connected_until_artex_discovers_tools(broker, monkeypatch):
+    module, client = broker
+    aid = module.create("atomicmail", "Catalog check", "test@atomicmail.ai", {"api_key": "valid-test-inbox-key"})
+    async def discover(**kwargs): return [{"name": "help"}, {"name": "list_agents"}]
+    events = []
+    async def artex(path, body=None, method=None):
+        events.append((path, body))
+        if path == "/api/mcp": return {"id": 123}
+        if path.endswith("/refresh"): raise module.HTTPException(502, "Transport failed")
+        raise AssertionError(path)
+    monkeypatch.setattr(module, "discover", discover)
+    monkeypatch.setattr(module, "artex", artex)
+    monkeypatch.setattr(module, "provision", module._real_provision)
+    response = client.post(f"/v1/accounts/{aid}/test")
+    assert response.status_code == 502
+    assert module.account(aid)["status"] == "error"
+    assert any(path == "/api/mcp" and body.get("enabled") is False for path, body in events)
+    assert module.account(aid)["mcp_name"] not in (module.SKILLS / "atomicmail-accounts/SKILL.md").read_text()
