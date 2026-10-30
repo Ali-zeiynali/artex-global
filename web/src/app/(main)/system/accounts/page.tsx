@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -56,6 +57,7 @@ type Account = {
   created_at: number;
 
   checked_at?: number;
+  avatar_version?: string | null;
 
   error?: string;
 };
@@ -521,7 +523,21 @@ export default function AccountsPage() {
                         <div
                           className={`flex size-11 items-center justify-center rounded-xl ${provider !== "telegram" ? "bg-emerald-500/10 text-emerald-600" : "bg-sky-500/10 text-sky-600"}`}
                         >
-                          {provider !== "telegram" ? <Mail /> : <Send />}
+                          {provider !== "telegram" ? (
+                            <Mail />
+                          ) : (
+                            <Avatar className="size-11">
+                              {account.avatar_version && (
+                                <AvatarImage
+                                  src={`/api/accounts/${account.id}/avatar?v=${account.avatar_version}`}
+                                  alt={`${account.label} profile photo`}
+                                />
+                              )}
+                              <AvatarFallback className="bg-sky-500/10 text-sky-600">
+                                <Send className="size-5" />
+                              </AvatarFallback>
+                            </Avatar>
+                          )}
                         </div>
                         <Badge variant={account.status === "connected" && account.enabled ? "default" : "secondary"}>
                           {account.status === "connected" && account.enabled ? <Check className="size-3" /> : null}

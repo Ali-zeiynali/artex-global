@@ -1123,6 +1123,19 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		e.touch(t.ID)
 		return true
 	}
+	// Process shutdown is a resumable interruption, not an LLM failure. Persist
+	// the frontier state before normal terminal settlement can mark it blocked
+	// (or done when an aborted SDK terminal has no error). Startup restores the
+	// task loops and workers reopen their existing transcripts. Explicit work
+	// pause/cancel above and task completion/timeout keep their own semantics.
+	if errors.Is(workCause, agent.AbortShutdown) && !e.isSettling(t.ID) && !isTerminalStatus(e.m.TaskStatus(t.ID)) {
+		controlErr = transitionIntentState(t.Store, intent.ID, "running", "open")
+		if controlErr != nil {
+			log.Printf("[worker %s] task %s intent #%d shutdown checkpoint failed: %v", name, t.ID, intent.ID, controlErr)
+		}
+		e.touch(t.ID)
+		return true
+	}
 	// if a pause cancelled this run mid-flight, return the intent to the frontier
 	// so it is re-claimed on resume — the worker will resume the prior LLM
 	// conversation from its transcript instead of restarting from scratch.

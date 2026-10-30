@@ -117,7 +117,10 @@ func TestTerminalTextCompletedToolNotBlamed(t *testing.T) {
 	trace := &runTrace{startedAt: time.Now()}
 	trace.start("tu_1", "Read", `{"path":"/etc/hosts"}`)
 	trace.done("tu_1")
-	_, detail := terminalText(ctx, &harness.Terminal{Reason: harness.ReasonAbortedStreaming}, trace)
+	summary, detail := terminalText(ctx, &harness.Terminal{Reason: harness.ReasonAbortedStreaming}, trace)
+	if !strings.Contains(summary, "等待服务恢复") || !strings.Contains(summary, "自动继续") {
+		t.Fatalf("shutdown must be displayed as waiting for recovery: %s", summary)
+	}
 	if strings.Contains(detail, "未返回结果") || !strings.Contains(detail, "已正常返回") {
 		t.Fatalf("completed tool was blamed:\n%s", detail)
 	}

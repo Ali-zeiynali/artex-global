@@ -57,7 +57,7 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 
 	var sum string
 	if aborted {
-		_, short, _, ok := AbortReason(ctx)
+		code, short, _, ok := AbortReason(ctx)
 		if !ok {
 			short = "未能取得取消原因"
 		}
@@ -69,6 +69,9 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 			stage = "工具执行阶段"
 		}
 		sum = "（运行被中断：" + short + "；停在" + stage + progressSuffix(term, tr) + "，未完成）"
+		if code == "shutdown" {
+			sum = "（等待服务恢复：后端正在重启；本轮记录已保存，未完成的意图将在启动后自动继续" + progressSuffix(term, tr) + "）"
+		}
 	} else if reason == harness.ReasonMaxTurns || reason == harness.ReasonTimeout {
 		sum = "（达到运行预算上限(" + string(reason) + ")，已收尾写回事实" + progressSuffix(term, tr) + "；本次无文字总结）"
 	} else {

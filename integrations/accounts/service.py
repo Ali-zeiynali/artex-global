@@ -21,7 +21,7 @@ from pathlib import Path
 import httpx
 from cryptography.fernet import Fernet
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from telethon import TelegramClient, errors as tg_errors
 
 ROOT = Path(os.environ.get("ACCOUNTS_HOME", str(Path.home() / ".config/artex-accounts")))
@@ -55,6 +55,8 @@ INTEGRATIONS = Path.home() / ".config/artex-integrations"
 SKILLS = Path.home() / ".config/artex-deploy/skills"
 SESSIONS = ROOT / "sessions"
 SESSIONS.mkdir(mode=0o700, exist_ok=True)
+AVATARS = ROOT / "avatars"
+AVATARS.mkdir(mode=0o700, exist_ok=True)
 HTTP = None
 ADMIN_TOKEN = None
 
@@ -77,8 +79,26 @@ def credentials(row):
 
 
 def public(row):
-    return {k: (bool(row[k]) if k == "enabled" else row[k]) for k in
+    result = {k: (bool(row[k]) if k == "enabled" else row[k]) for k in
             ["id", "provider", "label", "identity", "enabled", "status", "mcp_name", "tool_count", "created_at", "checked_at", "error"]}
+    photo = AVATARS / (row["id"] + ".photo")
+    result["avatar_version"] = str(photo.stat().st_mtime_ns) if row["provider"] == "telegram" and photo.exists() else None
+    return result
+
+
+async def cache_avatar(client, aid):
+    # Use the authorized account's own photo only. Failed refreshes must not
+    # prevent login; keep a previous photo when Telegram is unavailable.
+    try:
+        data = await asyncio.wait_for(client.download_profile_photo("me", file=bytes, download_big=False), 15)
+        photo = AVATARS / (aid + ".photo")
+        if not data:
+            photo.unlink(missing_ok=True)
+        elif len(data) <= 2 * 1024 * 1024 and (data.startswith(b"\xff\xd8\xff") or data.startswith(b"\x89PNG\r\n\x1a\n")):
+            photo.write_bytes(data)
+            photo.chmod(0o600)
+    except Exception:
+        pass
 
 
 def update(aid, **fields):
@@ -146,6 +166,17 @@ async def start(row):
                    "--outputTransport", "streamableHttp", "--stateful", "--sessionTimeout", "1800000",
                    "--host", "127.0.0.1", "--port", str(port), "--logLevel", "none"]
     else:
+        # No MCP process owns this session yet. Refresh the cached avatar before
+        # handing exclusive session ownership to the persistent connector.
+        client = TelegramClient(str(SESSIONS / aid), sec["api_id"], sec["api_hash"], flood_sleep_threshold=0)
+        try:
+            await asyncio.wait_for(client.connect(), 20)
+            if await client.is_user_authorized():
+                await cache_avatar(client, aid)
+        except Exception:
+            pass
+        finally:
+            await client.disconnect()
         env.update(TELEGRAM_API_ID=str(sec["api_id"]), TELEGRAM_API_HASH=sec["api_hash"],
                    TELEGRAM_SESSION_NAME=str(SESSIONS / aid), TELEGRAM_EXPOSED_TOOLS="all",
                    MCP_TRANSPORT="http", MCP_HOST="127.0.0.1", MCP_PORT=str(port),
@@ -333,6 +364,7 @@ def challenge(cid):
 async def finish_telegram(cid):
     ch = challenge(cid)
     me = await ch["client"].get_me()
+    await cache_avatar(ch["client"], ch["account_id"])
     await ch["client"].disconnect()
     CHALLENGES.pop(cid, None)
     identity = "+" + (me.phone or ch["phone"].lstrip("+"))
@@ -435,6 +467,18 @@ async def add_gmail(request: Request):
     await validate_gmail(identity, password)
     aid = create("gmail", str(data.get("label", "")).strip()[:80] or identity, identity, {"password": password})
     return await provision(aid)
+
+
+@app.get("/v1/accounts/{aid}/avatar")
+async def account_avatar(aid):
+    row = account(aid)
+    photo = AVATARS / (aid + ".photo")
+    if row["provider"] != "telegram" or not photo.exists():
+        raise HTTPException(404, "Profile photo unavailable")
+    with photo.open("rb") as file:
+        png = file.read(8).startswith(b"\x89PNG\r\n\x1a\n")
+    return FileResponse(photo, media_type="image/png" if png else "image/jpeg",
+                        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @app.post("/v1/accounts/atomicmail")
@@ -607,6 +651,7 @@ async def delete_account(aid, request: Request):
     if row["mcp_id"]:
         await artex("/api/mcp/" + str(row["mcp_id"]), method="DELETE")
     DB.execute("DELETE FROM accounts WHERE id=?", (aid,)); DB.commit()
+    (AVATARS / (aid + ".photo")).unlink(missing_ok=True)
     for file in SESSIONS.glob(aid + ".session*"):
         file.unlink(missing_ok=True)
     write_skills()

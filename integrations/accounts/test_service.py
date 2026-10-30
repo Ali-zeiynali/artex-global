@@ -120,3 +120,26 @@ def test_atomic_multi_account_auth_and_secret_redaction(broker, monkeypatch):
         assert key.encode() not in (module.ROOT / "accounts.sqlite").read_bytes()
     assert len(client.get("/v1/accounts").json()["accounts"]) == 2
     assert client.post("/v1/accounts/atomicmail", json={"email": "inbox0@atomicmail.ai", "api_key": "test-inbox-secret-0"}).status_code == 409
+
+
+def test_telegram_avatar_is_private_and_missing_photo_falls_back(broker):
+    import asyncio
+    module, client = broker
+    aid = module.create("telegram", "Photo test", "+15550001111", {"api_id": 123, "api_hash": "a" * 32})
+    path = f"/v1/accounts/{aid}/avatar"
+    assert client.get(path).status_code == 404
+    class PhotoClient:
+        async def download_profile_photo(self, entity, **kwargs):
+            assert entity == "me" and kwargs["download_big"] is False
+            return b"\xff\xd8\xffprivate-profile-photo"
+    asyncio.run(module.cache_avatar(PhotoClient(), aid))
+    assert client.get(path, headers={"Authorization": "Bearer invalid"}).status_code == 401
+    r = client.get(path)
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    assert r.headers["cache-control"] == "no-store"
+    assert client.get("/v1/accounts").json()["accounts"][0]["avatar_version"]
+    class NoPhotoClient:
+        async def download_profile_photo(self, *_args, **_kwargs): return None
+    asyncio.run(module.cache_avatar(NoPhotoClient(), aid))
+    assert client.get(path).status_code == 404
+    assert client.get("/v1/accounts").json()["accounts"][0]["avatar_version"] is None
