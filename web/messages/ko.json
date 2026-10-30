@@ -157,6 +157,7 @@
       "system": "시스템"
     },
     "item": {
+      "accounts": "계정",
       "agents": "에이전트",
       "approvals": "승인 기록",
       "asset-intercept": "자산 차단",

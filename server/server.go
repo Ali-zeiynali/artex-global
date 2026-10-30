@@ -908,6 +908,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/llm/records/by-model", s.pgTokenByModel) // 按模型聚合本任务 token 用量
 	mux.HandleFunc("GET /api/llm/records/{id}", s.pgGetLLMRecord)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
+	mux.HandleFunc("/api/accounts", s.accountsProxy)
+	mux.HandleFunc("/api/accounts/", s.accountsProxy)
+	mux.HandleFunc("GET /api/accounts/connections", s.accountConnections)
+	mux.HandleFunc("POST /api/accounts/connections", s.saveAccountConnection)
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
 	// 漏洞 IM 推送。渠道是「多实例 + 各自过滤规则」的资源，因此独立成一组
 	// REST 接口，而不是塞进扁平的 /api/settings 键值里。

@@ -157,6 +157,7 @@
       "system": "Sistema"
     },
     "item": {
+      "accounts": "Cuentas",
       "agents": "Agentes",
       "approvals": "Aprobaciones",
       "asset-intercept": "Bloqueo de activos",

@@ -157,6 +157,7 @@
       "system": "系统"
     },
     "item": {
+      "accounts": "账号",
       "agents": "Agent",
       "approvals": "审批记录",
       "asset-intercept": "资产拦截",
