@@ -59,6 +59,7 @@ function fmtRel(ts?: string | number): string | null {
 }
 
 function fmtTokens(n: number): string {
+  if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(2) + "B";
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
   if (n >= 1000) return (n / 1000).toFixed(1) + "k";
   return String(n);
@@ -142,6 +143,7 @@ export default function DashboardPage() {
   const [tokens, setTokens] = React.useState<TokenTotal | null>(null);
   const [convTokens, setConvTokens] = React.useState<ConvTokenSummary[]>([]);
   const [usageStats, setUsageStats] = React.useState<UsageStats | null>(null);
+  const [usageRefreshFailed, setUsageRefreshFailed] = React.useState(false);
   const [assetCounts, setAssetCounts] = React.useState<Record<string, number>>({});
   const [traffic, setTraffic] = React.useState<TrafficExchange[]>([]);
   const [agents, setAgents] = React.useState<Agent[]>([]);
@@ -225,7 +227,7 @@ export default function DashboardPage() {
     let alive = true;
     const load = async () => {
       try {
-        const [traf, counts, agentList, mcpList, skillList, toolList, profileList, usage] = await Promise.all([
+        const [traf, counts, agentList, mcpList, skillList, toolList, profileList] = await Promise.all([
           api.traffic(0, 50),
           api.assetCounts(),
           api.agents(),
@@ -233,7 +235,6 @@ export default function DashboardPage() {
           api.skills(),
           api.tools(),
           api.llmProfiles(),
-          api.usageStats(365),
         ]);
         if (!alive) return;
         setTraffic(traf.exchanges ?? []);
@@ -243,7 +244,6 @@ export default function DashboardPage() {
         setSkills(skillList);
         setTools(toolList);
         setLLMProfiles(profileList);
-        setUsageStats(usage);
       } catch {
         /* transient errors */
       }
@@ -254,6 +254,22 @@ export default function DashboardPage() {
       alive = false;
       clearInterval(t);
     };
+  }, []);
+
+  // Accounting must keep updating even when an unrelated dashboard widget fails.
+  React.useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const usage = await api.usageStats(365);
+        if (alive) { setUsageStats(usage); setUsageRefreshFailed(false); }
+      } catch {
+        if (alive) setUsageRefreshFailed(true);
+      }
+    };
+    void load();
+    const timer = setInterval(load, 15000);
+    return () => { alive = false; clearInterval(timer); };
   }, []);
 
   // ── derived ───────────────────────────────────────────────────────────────
@@ -331,7 +347,7 @@ export default function DashboardPage() {
   const defaultProfileId = activeProfile ? Number(activeProfile.id) : null;
 
   // 数据源开关：旧版 = activity（task.tokens + 会话），新版 = llm_usage 计量账本。
-  const [tokenVersion, setTokenVersion] = React.useState<"old" | "new">("old");
+  const [tokenVersion, setTokenVersion] = React.useState<"old" | "new">("new");
   // selected profile tab: "all" = 全部; number = specific profile id
   const [tokenTab, setTokenTab] = React.useState<number | null | "all">("all");
   // day range for the daily bar chart
@@ -386,8 +402,9 @@ export default function DashboardPage() {
   const tokenByProfileNew = React.useMemo<Map<number | null, Bucket>>(() => {
     const m = new Map<number | null, Bucket>();
     for (const p of usageStats?.by_profile ?? []) {
-      // 未匹配到现有 profile（改名/删除/空名）→ 落到默认桶，仍计入「全部」。
-      const key = profileIdByName.get(p.profile_name) ?? defaultProfileId;
+      // Renamed/deleted profiles remain in the total without being silently
+      // attributed to today's default profile (or its replacement API key).
+      const key = profileIdByName.get(p.profile_name) ?? null;
       const prev = m.get(key) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0 };
       m.set(key, {
         input: prev.input + p.input_tokens,
@@ -398,7 +415,7 @@ export default function DashboardPage() {
       });
     }
     return m;
-  }, [usageStats, profileIdByName, defaultProfileId]);
+  }, [usageStats, profileIdByName]);
 
   const tokenByProfile = tokenVersion === "new" ? tokenByProfileNew : tokenByProfileOld;
 
@@ -459,7 +476,7 @@ export default function DashboardPage() {
     const m = new Map<string, { input: number; output: number; cacheRead: number }>();
     for (const d of usageStats?.daily ?? []) {
       if (d.date < cutoff) continue;
-      if (tokenTab !== "all" && (profileIdByName.get(d.profile_name) ?? defaultProfileId) !== tokenTab) continue;
+      if (tokenTab !== "all" && (profileIdByName.get(d.profile_name) ?? null) !== tokenTab) continue;
       const prev = m.get(d.date) ?? { input: 0, output: 0, cacheRead: 0 };
       m.set(d.date, {
         input: prev.input + d.input_tokens,
@@ -468,7 +485,7 @@ export default function DashboardPage() {
       });
     }
     return [...m.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, v]) => ({ date: date.slice(5), ...v }));
-  }, [usageStats, tokenDays, tokenTab, profileIdByName, defaultProfileId]);
+  }, [usageStats, tokenDays, tokenTab, profileIdByName]);
 
   const dailyTokenData = tokenVersion === "new" ? dailyTokenDataNew : dailyTokenDataOld;
 
@@ -598,7 +615,7 @@ export default function DashboardPage() {
               <ZapIcon className="size-3" /> {t("tokenUsage")}
             </div>
             <div className="text-2xl font-semibold tabular-nums">
-              {fmtTokens(displayedTokens.input + displayedTokens.output) || "—"}
+              {tokenVersion === "new" && usageStats === null ? "—" : fmtTokens(displayedTokens.input + displayedTokens.output)}
             </div>
           </CardHeader>
           <CardContent className="text-[10px] text-muted-foreground">
@@ -614,6 +631,9 @@ export default function DashboardPage() {
       {/* ── Row 2: LLM Token 消耗 ── */}
       <Card className="p-4">
         {/* Header */}
+        {tokenVersion === "new" && usageRefreshFailed && (
+          <p role="status" className="mb-3 text-xs text-amber-600">{t("usageRefreshFailed")}</p>
+        )}
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 text-xs font-semibold">
             <ZapIcon className="size-3.5 text-muted-foreground" />
@@ -693,6 +713,11 @@ export default function DashboardPage() {
                 </button>
               );
             })}
+            {tokenVersion === "new" && tokenByProfile.has(null) && (
+              <button type="button" onClick={() => setTokenTab(null)} className={cn("rounded-md px-2.5 py-1 text-[10px] font-medium", tokenTab === null ? "bg-foreground text-background" : "bg-muted/30 text-muted-foreground")}>
+                {t("historicalProfiles")}
+              </button>
+            )}
           </div>
         </div>
 
@@ -704,7 +729,7 @@ export default function DashboardPage() {
             <div>
               <div className="text-[10px] text-muted-foreground">{t("totalInOut")}</div>
               <div className="mt-0.5 text-3xl font-bold tabular-nums tracking-tight">
-                {fmtTokens(displayedTokens.input + displayedTokens.output) || "—"}
+                {tokenVersion === "new" && usageStats === null ? "—" : fmtTokens(displayedTokens.input + displayedTokens.output)}
               </div>
               <div className="mt-0.5 text-[10px] text-muted-foreground">
                 {t("taskCount", { count: displayedTokens.taskCount })}
